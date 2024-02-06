@@ -1,0 +1,6 @@
+# ninja log v5
+0	2075	1707136714453222190	/media/nas/cxc/gaussianScene/submodules/depth-diff-gaussian-rasterization-min/build/temp.linux-x86_64-cpython-39/cuda_rasterizer/forward.o	8ce95a2cf14a11d7
+0	2311	1707136714689222182	/media/nas/cxc/gaussianScene/submodules/depth-diff-gaussian-rasterization-min/build/temp.linux-x86_64-cpython-39/cuda_rasterizer/backward.o	1e0c3752183e9b4b
+1	9065	1707136721438221941	/media/nas/cxc/gaussianScene/submodules/depth-diff-gaussian-rasterization-min/build/temp.linux-x86_64-cpython-39/cuda_rasterizer/rasterizer_impl.o	68f863421272b4ab
+1	24176	1707136736541221400	/media/nas/cxc/gaussianScene/submodules/depth-diff-gaussian-rasterization-min/build/temp.linux-x86_64-cpython-39/ext.o	c6a38a4bda2b8c41
+2	55539	1707136767904220279	/media/nas/cxc/gaussianScene/submodules/depth-diff-gaussian-rasterization-min/build/temp.linux-x86_64-cpython-39/rasterize_points.o	a1c5a47fe3637cf5
