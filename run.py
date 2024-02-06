@@ -36,13 +36,13 @@ def save_d_img(d, save_path):
     d_img = Image.fromarray((d/d_max.numpy()*255).astype(np.uint8))
     d_img.save(save_path)
 
-prompt = "Chinese garden, realistic, photography"
+prompt = "Autumn park, realistic, photography"
 neg_prompt = ""
 h_in, w_in = 512, 512
 prompt_path = prompt.replace(" ","_")
 os.system(f"mkdir -p ./gs_checkpoints/{prompt_path}")
 
-N = 15 # camera pose nums
+N = 20 # camera pose nums
 render_poses = torch.zeros(N,3,4)
 yz_reverse = torch.tensor([[1,0,0], [0,-1,0], [0,0,-1]],dtype=torch.float32)
 frames = []
@@ -162,6 +162,9 @@ mask_all_pil = Image.fromarray(np.round((mask_all)*255.).astype(np.uint8))
 # train gaussians
 gaussian_model.training_setup(opt)
 
+gt_usage = [0] * N
+MAX_USAGE = 50
+
 for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
     gaussian_model.update_learning_rate(iteration)
 
@@ -178,7 +181,7 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
         render_pkg['render'], render_pkg['viewspace_points'], render_pkg['visibility_filter'], render_pkg['radii'])
     
     # get refined G.T.
-    if iteration % 50 == 0:
+    if gt_usage[viewpoint_cam.uid] == MAX_USAGE:
         image_u8 = (255*image.clone().detach().cpu().permute(1,2,0)).byte()
         image_pil = Image.fromarray(image_u8.numpy()).convert('RGB')
         new_gt_pil =  rgb_model(
@@ -197,12 +200,14 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
         down_img = F.interpolate(raw_img.permute(2,0,1).unsqueeze(0), scale_factor=0.5).squeeze(0)
         new_gt = down_img/255.
         gt_images[viewpoint_cam.uid] = new_gt
+        gt_usage[viewpoint_cam.uid] = 0
 
         image_pil.save(f"scene_imgs/{iteration}.png")
         new_gt_pil.save(f"scene_imgs/gt_{iteration}.png")
 
 
     gt_image = gt_images[viewpoint_cam.uid].to("cuda")
+    gt_usage[viewpoint_cam.uid] += 1
 
     Ll1 = l1_loss(image, gt_image)
     loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
@@ -242,4 +247,4 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
         # print(imgpath)
         image_pil.save(imgpath)
 
-gaussian_model.save_ply(f'./gs_checkpoints/{prompt_path}/{prompt}.ply')
+gaussian_model.save_ply(f'./upload/gsplat.ply')
