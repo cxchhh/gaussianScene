@@ -1,3 +1,7 @@
 **/__pycache__/
 gs_checkpoints
 scene_imgs
+upload
+*.png
+**/out.splats
+out.splats

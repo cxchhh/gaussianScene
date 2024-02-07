@@ -12,6 +12,7 @@ from gaussian_renderer import render
 from utils.graphics import BasicPointCloud
 from utils.loss import l1_loss, ssim
 from scene.dataset_readers import readDataInfo
+from utils.convert import save_splat
 from utils.misc import kernel
 from tqdm import tqdm
 
@@ -37,20 +38,21 @@ def save_d_img(d, save_path):
     d_img.save(save_path)
 
 prompt = "Autumn park, realistic, photography"
-neg_prompt = ""
+neg_prompt = "people"
 h_in, w_in = 512, 512
 prompt_path = prompt.replace(" ","_")
 os.system(f"mkdir -p ./gs_checkpoints/{prompt_path}")
 
-N = 20 # camera pose nums
+N = 50 # camera pose nums
 render_poses = torch.zeros(N,3,4)
 yz_reverse = torch.tensor([[1,0,0], [0,-1,0], [0,0,-1]],dtype=torch.float32)
 frames = []
 for i in range(N):
-    th = i*360/N
+    th = np.random.uniform(0,360)
     th_rad = th/180*np.pi
     render_poses[i,:3,:3] = torch.tensor([[np.cos(th_rad),0,-np.sin(th_rad)],[0,1,0],[np.sin(th_rad),0,np.cos(th_rad)]],dtype=torch.float32)
-    render_poses[i,:3,3:4] = torch.tensor([0,0,0],dtype=torch.float32).reshape(3,1)
+    render_poses[i,:3,3:4] = torch.tensor([np.random.uniform(-1.5,1.5),0,np.random.uniform(-1.5,1.5)],dtype=torch.float32).reshape(3,1)
+    
 
     ### Transform world to pixel
     Rw2i = render_poses[i,:3,:3]
@@ -75,8 +77,8 @@ traindata = {
             'camera_angle_x': cam.fov[0],
             'W': W,
             'H': H,
-            'pcd_points': torch.zeros((3,1),dtype=torch.float),
-            'pcd_colors':  torch.zeros((1,3),dtype=torch.float),
+            'pcd_points': torch.zeros((3,1), dtype=torch.float),
+            'pcd_colors':  torch.zeros((1,3), dtype=torch.float),
             'frames': frames,
         }
 
@@ -99,7 +101,7 @@ for i in tqdm(range(N),desc="creating point cloud from poses"):
     
     del gaussian_model # for saving VRAM
     
-    #import pdb; pdb.set_trace()
+    #
     image_u8 = (255*image.clone().detach().cpu().permute(1,2,0)).byte()
     image_pil = Image.fromarray(image_u8.numpy()).convert('RGB')
     mask = image_u8.float()
@@ -131,15 +133,19 @@ for i in tqdm(range(N),desc="creating point cloud from poses"):
     depth_np = d_model.infer_pil(inpainted_image)
     depth = torch.from_numpy(depth_np)
 
-    #import pdb; pdb.set_trace()
+    #
     Ri, Ti = render_poses[i,:3,:3], render_poses[i,:3,3:4]
-    pts_coord_cam_i = torch.matmul(torch.linalg.inv(K), torch.stack((x*depth, y*depth, 1*depth), axis=0).reshape(3,-1))
-
+    crop_edge = 0
+    depth_pixels = torch.stack((x*depth, y*depth, 1*depth), axis=0)[:, crop_edge:h_in-crop_edge, crop_edge:w_in-crop_edge]
+    pts_coord_cam_i = torch.matmul(torch.linalg.inv(K), depth_pixels.reshape(3,-1))
     pts_coord_world_curr = (torch.linalg.inv(Ri).matmul(pts_coord_cam_i) - torch.linalg.inv(Ri).matmul(Ti).reshape(3,1)).float()
-    pts_colors_curr = (torch.from_numpy(np.array(inpainted_image)).reshape(-1,3).float()/255.)
+    
+    pts_colors_curr = ((down_img[crop_edge:h_in-crop_edge, crop_edge:w_in-crop_edge, :]).reshape(-1,3).float()/255.)
 
-    new_pts_coord_world = pts_coord_world_curr.T[mask_u8.reshape(-1,3) > 0].reshape(-1,3)
-    new_pts_colors = pts_colors_curr[mask_u8.reshape(-1,3) > 0].reshape(-1,3)
+    #import pdb; pdb.set_trace()
+    crop_mask = mask_u8[crop_edge:h_in-crop_edge, crop_edge:w_in-crop_edge, :]
+    new_pts_coord_world = pts_coord_world_curr.T[crop_mask.reshape(-1,3) > 0].reshape(-1,3)
+    new_pts_colors = pts_colors_curr[crop_mask.reshape(-1,3) > 0].reshape(-1,3)
 
     if i == 0 :
         new_global_pts = new_pts_coord_world.cpu()
@@ -163,12 +169,13 @@ mask_all_pil = Image.fromarray(np.round((mask_all)*255.).astype(np.uint8))
 gaussian_model.training_setup(opt)
 
 gt_usage = [0] * N
-MAX_USAGE = 50
+MAX_USAGE = 30
+gs_dir = f'./gs_checkpoints/{prompt_path}'
 
 for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
     gaussian_model.update_learning_rate(iteration)
 
-    if iteration % 1000 == 0:#
+    if iteration % 2000 == 0:#
         gaussian_model.oneupSHdegree()
     
     # Pick a Camera
@@ -188,8 +195,8 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
                 prompt=prompt,
                 negative_prompt=neg_prompt,
                 generator=generator,
-                strength=0.7,
-                guidance_scale=5,
+                strength=0.8,
+                guidance_scale=10,
                 num_inference_steps=30,
                 image=image_pil,
                 mask_image=mask_all_pil
@@ -202,8 +209,8 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
         gt_images[viewpoint_cam.uid] = new_gt
         gt_usage[viewpoint_cam.uid] = 0
 
-        image_pil.save(f"scene_imgs/{iteration}.png")
-        new_gt_pil.save(f"scene_imgs/gt_{iteration}.png")
+        #image_pil.save(f"scene_imgs/{iteration}.png")
+        #new_gt_pil.save(f"scene_imgs/gt_{iteration}.png")
 
 
     gt_image = gt_images[viewpoint_cam.uid].to("cuda")
@@ -237,14 +244,15 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):#
             gaussian_model.optimizer.zero_grad(set_to_none = True)
     
     if (iteration) % 500 == 0:
-        #save gaussians
-        gaussian_model.save_ply(f'./gs_checkpoints/{prompt_path}/{prompt}.ply')
 
         #save snapshot
         image_u8 = (255*image.clone().detach().cpu().permute(1,2,0)).byte()
         image_pil = Image.fromarray(image_u8.numpy()).convert('RGB')
-        imgpath=f'./gs_checkpoints/{prompt_path}/{prompt}_snapshot_{(iteration)}.png'
+        imgpath=f'{gs_dir}/snapshot_{(iteration)}.png'
         # print(imgpath)
         image_pil.save(imgpath)
 
-gaussian_model.save_ply(f'./upload/gsplat.ply')
+
+#convert ply to gaussian splats
+output_path = f"{gs_dir}/out.splat"
+save_splat(gaussian_model, output_path)
