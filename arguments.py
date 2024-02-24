@@ -16,11 +16,11 @@ class GSParams:
         self.eval = False
         self.use_depth = False
 
-        self.iterations = 6000
+        self.iterations = 9000
         self.position_lr_init = 0.00016
         self.position_lr_final = 0.0000016
         self.position_lr_delay_mult = 0.01
-        self.position_lr_max_steps = 2990
+        self.position_lr_max_steps = 9000
         self.feature_lr = 0.0025
         self.opacity_lr = 0.05
         self.scaling_lr = 0.005
@@ -30,7 +30,7 @@ class GSParams:
         self.densification_interval = 100
         self.opacity_reset_interval = 30000
         self.densify_from_iter = 500
-        self.densify_until_iter = 15_000
+        self.densify_until_iter = 3000
         self.densify_grad_threshold = 0.0002
 
         self.convert_SHs_python = False
