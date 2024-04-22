@@ -338,8 +338,9 @@ class MidasCore(nn.Module):
             kwargs = MidasCore.parse_img_size(kwargs)
         img_size = kwargs.pop("img_size", [384, 384])
         print("img_size", img_size)
-        midas = torch.hub.load("intel-isl/MiDaS", midas_model_type,
-                               pretrained=use_pretrained_midas, force_reload=force_reload)
+        import os
+        midas = torch.hub.load(os.environ['HOME']+"/.cache/torch/hub/intel-isl_MiDaS_master", midas_model_type,
+                               pretrained=use_pretrained_midas, force_reload=force_reload, source='local')
         kwargs.update({'keep_aspect_ratio': force_keep_ar})
         midas_core = MidasCore(midas, trainable=train_midas, fetch_features=fetch_features,
                                freeze_bn=freeze_bn, img_size=img_size, **kwargs)

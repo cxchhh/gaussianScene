@@ -46,13 +46,13 @@ class GaussianModel:
     def __init__(self, sh_degree : int):
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree  
-        self._xyz = torch.empty(0)
-        self._features_dc = torch.empty(0)
-        self._features_rest = torch.empty(0)
-        self._scaling = torch.empty(0)
-        self._rotation = torch.empty(0)
-        self._opacity = torch.empty(0)
-        self.max_radii2D = torch.empty(0)
+        self._xyz = torch.empty(0).to("cuda")
+        self._features_dc = torch.empty(0).to("cuda")
+        self._features_rest = torch.empty(0).to("cuda")
+        self._scaling = torch.empty(0).to("cuda")
+        self._rotation = torch.empty(0).to("cuda")
+        self._opacity = torch.empty(0).to("cuda")
+        self.max_radii2D = torch.empty(0).to("cuda")
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
         self.optimizer = None
@@ -147,6 +147,19 @@ class GaussianModel:
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
+    
+    def change_global_pts(self, pts_coord: torch.Tensor):
+        self._xyz = nn.Parameter(pts_coord.cuda().requires_grad_(True))
+
+    def merge(self, new_gaussian):
+        #import pdb; pdb.set_trace()
+        self._xyz = nn.Parameter(torch.concat([self._xyz,new_gaussian._xyz]).contiguous().requires_grad_(True))
+        self._features_dc = nn.Parameter(torch.concat([self._features_dc,new_gaussian._features_dc]).contiguous().requires_grad_(True))
+        self._features_rest = nn.Parameter(torch.concat([self._features_rest,new_gaussian._features_rest]).contiguous().requires_grad_(True))
+        self._scaling = nn.Parameter(torch.concat([self._scaling,new_gaussian._scaling]).contiguous().requires_grad_(True))
+        self._rotation = nn.Parameter(torch.concat([self._rotation,new_gaussian._rotation]).contiguous().requires_grad_(True))
+        self._opacity = nn.Parameter(torch.concat([self._opacity,new_gaussian._opacity]).contiguous().requires_grad_(True))
+        self.max_radii2D = nn.Parameter(torch.concat([self.max_radii2D,new_gaussian.max_radii2D]).contiguous().requires_grad_(True))
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense

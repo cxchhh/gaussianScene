@@ -1,15 +1,27 @@
-import torch
+import torch, os
 import numpy as np
 from PIL import Image
-d_model = torch.hub.load('./ZoeDepth', 'ZoeD_N', source='local', pretrained=True).to('cuda')
-in_img = 'room.jpg'
+from diffusers import DiffusionPipeline
+from diffusers.utils import load_image
 
-img = Image.open(f'./imgs/{in_img}').convert('RGB')
+#d_model = torch.hub.load('intel-isl/MiDaS', 'DPT_BEiT_L_512', pretrained=True,trust_repo=True).to('cuda')
+in_img = 'inp.png'
 
-d = d_model.infer_pil(img)
+img = Image.open("./"+in_img).convert('RGB')
+# prepare image for the model
+D_PATH = os.environ['HOME']+'/.cache/huggingface/hub/models--prs-eth--marigold-lcm-v1-0/snapshots/773825ffad4318356efcd14e3ff89d7812e5a0ab'
+pipe = DiffusionPipeline.from_pretrained(
+    D_PATH,
+    local_files_only=True,
+    custom_pipeline="marigold_depth_estimation",
+    torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).
+    variant="fp16",                           # (optional) Use with `torch_dtype=torch.float16`, to directly load fp16 checkpoint
+).to("cuda")
 
-d_max = torch.max(torch.from_numpy(d))
-d = d/d_max.numpy()
-d = (d*255).astype(np.uint8)
-d_img = Image.fromarray(d)
-d_img.save(f'./imgs/d_{in_img}')
+# interpolate to original size
+depth = pipe(
+    img
+)
+# depth = depth.reshape(*img.size[::-1])
+# depth = depth.repeat(3,1,1).permute(1,2,0)
+depth['depth_colored'].save('d.png')
