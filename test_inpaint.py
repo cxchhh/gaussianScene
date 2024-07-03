@@ -16,32 +16,39 @@ rgb_model = AutoPipelineForInpainting.from_pretrained(
         variant="fp16").to("cuda")
 #rgb_model.set_progress_bar_config(disable=True)
 
-prompt = "Autumn park, realistic, photography"
+prompt = "An astronaut in a cave, trending on artstation, 8k image"
 neg_prompt = ""
-in_img = 'snapshot_1400.png'
+in_img = 'inp.png'
 
 img = Image.open(f'./imgs/{in_img}').convert('RGB')
 w_in, h_in = img.size
 #import pdb; pdb.set_trace()
 img_ = np.array(img)
-#img_[:,int(w_in/2):w_in,:] = 0
+
+mask_in = np.zeros((h_in, w_in, 3), dtype=np.uint8)
+
+l = 0.6
+r = 0.8
+t = 0.45
+b = 0.8
+img_[int(h_in*t):int(h_in*b),int(w_in*l):int(w_in*r),:] = 0
+mask_in[int(h_in*t):int(h_in*b),int(w_in*l):int(w_in*r),:] = 1
+
 img = Image.fromarray(np.array(img_,dtype=np.uint8)).convert('RGB')
-
-mask_in = np.ones((h_in, w_in, 3), dtype=np.uint8)
-#mask_in[:,:int(w_in/2),:] = 0
-
 mask = Image.fromarray(np.round((mask_in)*255.).astype(np.uint8))
-#mask.save(f"./imgs/mask_{in_img}")
+mask.save(f"./imgs/mask_{in_img}")
+
 out_img = rgb_model(
                 prompt=prompt,
                 negative_prompt=neg_prompt,
                 generator=generator,
-                strength=0.3,
-                guidance_scale=10.0,
-                num_inference_steps=15,
+                strength=1.0,
+                guidance_scale=5.0,
+                num_inference_steps=30,
                 image=img,
                 mask_image=mask
             ).images[0]
+
 raw_img = torch.from_numpy(np.array(out_img)).float()
 down_img = F.interpolate(raw_img.permute(2,0,1).unsqueeze(0), scale_factor=0.5).squeeze(0)
 final_img = Image.fromarray(down_img.byte().permute(1,2,0).numpy())

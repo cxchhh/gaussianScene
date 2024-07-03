@@ -1,4 +1,5 @@
 from random import randint
+from re import X
 import numpy as np
 import torch
 from PIL import Image
@@ -14,9 +15,17 @@ from arguments import CameraParams
 kernel = np.array([[ 0.0947416, 0.118318, 0.0947416],
                   [0.118318, 0.147761, 0.118318],
                   [0.0947416, 0.118318, 0.0947416]])
+x_kernel = np.array([[0,1,0],
+                     [1,1,1],
+                     [0,1,0]],np.uint8)
+
 h_kernel = np.array([[0,0,0],
                      [1,1,1],
                      [0,0,0]],np.uint8)
+
+v_kernel = np.array([[0,1,0],
+                     [0,1,0],
+                     [0,1,0]],np.uint8)
 
 
 def pose2cam(render_pose, idx, white_background=False):
@@ -65,7 +74,7 @@ def pose2cam(render_pose, idx, white_background=False):
 
 def add_new_pose(max_range, iter, max_iters):
     factor = int(iter*100 / max_iters)/100
-    depth_to_c = max_range/3 + max_range/3 * factor
+    depth_to_c = 0 + max_range/3 * factor
 
     new_pose = torch.zeros([3,4],dtype=torch.float32)
     th = randint(0,360)
@@ -124,3 +133,8 @@ def add_anns(anns, origin_rgb):
         bg[:,:,i] *= 0.65 * alpha + 1.0 * (1-alpha)
     result = cv2.addWeighted(bg,0.8, global_mask,0.35,0)
     return np.clip(result,0,1)
+
+def save_d_img(d, save_path):
+    d_max = torch.max(torch.from_numpy(d))
+    d_img = Image.fromarray((d/d_max.numpy()*255).astype(np.uint8))
+    d_img.save(save_path)

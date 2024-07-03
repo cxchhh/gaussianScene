@@ -14,16 +14,15 @@ from utils.graphics import BasicPointCloud
 from utils.loss import l1_loss, ssim
 from scene.dataset_readers import readDataInfo
 from utils.convert import save_splat
-from utils.misc import add_new_pose, create_bottom, kernel, pose2cam, h_kernel, v_kernel, x_kernel, save_d_img
+from utils.misc import add_new_pose, create_bottom, kernel, pose2cam, x_kernel, v_kernel
 from tqdm import tqdm
-from utils.llm_interaction import gen_refined_prompts
 
 opt = GSParams()
 cam = CameraParams()
 gaussian_model = GaussianModel(opt.sh_degree)
 background = torch.tensor([0, 0, 0], dtype=torch.float32, device='cuda')
 
-multi_gpu = 0
+multi_gpu = False
 
 seed = 1307
 generator = torch.Generator(device='cuda').manual_seed(seed)
@@ -47,15 +46,19 @@ d_model = DiffusionPipeline.from_pretrained(
 ).to("cuda:2" if multi_gpu else "cuda")
 d_model.set_progress_bar_config(disable=True)
 
-prompt = "A cabin in the woods, high-resolution"
-
-neg_prompt = "people, text, photo frames"
+prompt = "A living room, high quality, 8k image, photorealistic"
+neg_prompt = "text, photo frames"
 h_in, w_in = cam.H, cam.W
 prompt_path = prompt.replace(" ", "_")[:min(50, len(prompt))]
-
 gs_dir = f'./gs_checkpoints/{prompt_path}'
 os.system(f"mkdir -p {gs_dir}")
 output_path = f"{gs_dir}/{prompt_path}.splat"
+
+
+def save_d_img(d, save_path):
+    d_max = torch.max(torch.from_numpy(d))
+    d_img = Image.fromarray((d/d_max.numpy()*255).astype(np.uint8))
+    d_img.save(save_path)
 
 
 mask_all = torch.ones([h_in, w_in, 3], dtype=torch.uint8)*255
@@ -65,7 +68,6 @@ N = 10  # camera pose nums
 N_2 = 0
 render_poses = torch.zeros(N + N_2, 3, 4)
 
-refined_prompts = gen_refined_prompts(prompt, N)
 
 H, W, K = cam.H, cam.W, cam.K
 x, y = torch.meshgrid(torch.arange(W, dtype=torch.float32), torch.arange(
@@ -81,40 +83,36 @@ gt_images = [None] * (N + N_2)
 center_depth = None
 near_depth = None
 global_pts = None
-bottom_y = None
 for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
-    if i < N:
+    if i == 0:
         bg_r = 1
-        th = 360 * i / N
-        th_rad = th / 180 * np.pi
-        render_poses[i, :3, :3] = torch.tensor([[np.cos(th_rad), 0, -np.sin(th_rad)], [
-                                               0, 1, 0], [np.sin(th_rad), 0, np.cos(th_rad)]], dtype=torch.float32)
+        render_poses[i, :3, :3] = torch.tensor([[1, 0, 0], 
+                                                [0, 1, 0], 
+                                                [0, 0, 1]], dtype=torch.float32)
 
         render_poses[i, :3, 3:4] = torch.tensor(
-            [0, 0, 0], dtype=torch.float32).reshape(3, 1)
-
-    else:
-        # if (i-N) >= 2:
-        #     break
-        bg_r = 0.5
-        th = 360 * (i - N) / (N_2)
+            [0, 0, 1], dtype=torch.float32).reshape(3, 1)
+    elif i < N:
+        alpha = 45
+        t_rad = 2* np.pi * (i - 1) / (N - 1)
+        th = alpha * np.sin(t_rad)
         th_rad = th / 180 * np.pi
-        phi = -15
+        phi = -alpha * np.cos(t_rad) *0.3
         phi_rad = phi / 180 * np.pi
         Rot_H = torch.tensor([[np.cos(th_rad), 0, -np.sin(th_rad)], [0, 1, 0],
                              [np.sin(th_rad), 0, np.cos(th_rad)]], dtype=torch.float32)
         Rot_V = torch.tensor([[1, 0, 0], [0, np.cos(phi_rad), np.sin(phi_rad)], [
                              0, -np.sin(phi_rad), np.cos(phi_rad)]], dtype=torch.float32)
         render_poses[i, :3, :3] = torch.matmul(Rot_V, Rot_H)
-        t_rad = torch.tensor([0, -0.5, near_depth * 1.1],
-                             dtype=torch.float32).reshape(3, 1)
-        render_poses[i, :3, 3:4] = t_rad
+
+        render_poses[i, :3, 3:4] = torch.tensor(
+            [2* np.sin(t_rad), np.cos(t_rad), 2], dtype=torch.float32).reshape(3, 1)
 
     train_cameras.append(pose2cam(render_poses[i], i))
     Ri, Ti = render_poses[i, :3, :3], render_poses[i, :3, 3:4]
 
     if i == 0:  # first pose
-        image = torch.zeros([512, 512, 3], dtype=torch.uint8)
+        image = torch.zeros([H, W, 3], dtype=torch.uint8)
         image_pil = Image.fromarray(image.numpy()).convert('RGB')
         mask = mask_all
         mask_pil = mask_all_pil
@@ -146,13 +144,13 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
         mask[inside_pixels.T.flip(0).tolist()] = 0
         mask *= 255
         mask = mask.repeat(3, 1, 1).permute(1, 2, 0).numpy()
-        mask = cv2.erode(mask, kernel, iterations=2)
+        mask = cv2.erode(mask, kernel, iterations=8)
         mask_erode = torch.tensor(mask)
-        mask = cv2.dilate(mask, kernel, iterations=3)
+        mask = cv2.dilate(mask, kernel, iterations=9)
         mask = torch.tensor(mask)
 
         mask_diff = torch.bitwise_xor(mask[:, :-1], mask[:, 1:])
-        mask_diff = cv2.dilate(mask_diff.numpy(), kernel, iterations=3)
+        mask_diff = cv2.dilate(mask_diff.numpy(), kernel, iterations=6)
         mask_diff = torch.tensor(mask_diff)
         mask_diff = mask_diff & (255 * (mask[:, :-1] == 0).byte())
         mask_diff = torch.cat([mask_diff, torch.zeros(h_in, 1, 3)], dim=1)
@@ -165,7 +163,7 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
 
     # image_pil.save(f"./imgs/img_{i}.png")
     inpainted_image = rgb_model(
-        prompt=refined_prompts[i],
+        prompt=prompt,
         negative_prompt=neg_prompt,
         image=image_pil,
         mask_image=mask_pil,
@@ -178,16 +176,18 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
     # manually downsample from 1024 to 512, because the params (height,width)=(512,512) to the pipeline give bad result
     raw_img = torch.from_numpy(np.array(inpainted_image))
     down_img = F.interpolate(raw_img.permute(2, 0, 1).unsqueeze(
-        0), scale_factor=0.5).squeeze(0).permute(1, 2, 0)
+        0), scale_factor=H/1024).squeeze(0).permute(1, 2, 0)
     inpainted_image = Image.fromarray(down_img.numpy())
 
-    gt_images[i] = (down_img / 255.).permute(2, 0, 1).float()
+    gt_images[i] = (torch.from_numpy(
+        np.array(inpainted_image))/255.).permute(2, 0, 1).float()
 
     depth_pkg = d_model(inpainted_image)
     depth_np = depth_pkg['depth_np'] * 10
     depth = torch.from_numpy(depth_np)
-    #import pdb;pdb.set_trace()
-
+    
+    # if i > 0:
+    #     import pdb;pdb.set_trace()
 
     if i == 0:
         depth = depth + depth.median()
@@ -195,21 +195,23 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
         center_depth = torch.mean(
             depth[int(h_in/2)-2:int(h_in/2)+2, int(w_in/2)-2:int(w_in/2)+2])
     else:
-        depth = depth + near_depth
+        depth = depth + depth.median()
     if i > 0:
         # aligning the predicted depth
         
         sc = torch.nn.Parameter(torch.ones([1]).float())
         bi = torch.nn.Parameter(torch.zeros([1]).float())
-        d_optimizer = torch.optim.Adam(params=[sc, bi], lr=0.005)
+        d_optimizer = torch.optim.Adam(params=[sc, bi], lr=0.01)
         mask_d_edge = mask_diff[..., 0]
-        mask_d = mask[..., 0] <= 0 if i< N else mask_diff[..., 0]
+        mask_d = mask[..., 0] <= 0
+        
         
         #import pdb; pdb.set_trace()
-        for iter in range(100):
-            trans_d = sc * depth + bi
-            curr_d = trans_d[mask_d]
-            gt_d = ref_d_img[mask_d]
+        for iter in range(1000):
+            sc_map = sc
+            trans_d = (sc_map * depth) + bi
+            curr_d = trans_d[mask_d_edge]
+            gt_d = ref_d_img[mask_d_edge]
             loss = torch.mean((gt_d - curr_d) ** 2)
             d_optimizer.zero_grad()
             loss.backward()
@@ -217,36 +219,28 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
 
         # add new points into global point cloud
         with torch.no_grad():
-            depth = sc * depth + bi
+            #import pdb; pdb.set_trace()
+            depth = (sc_map * depth) + bi
+        # t_map = torch.zeros_like(depth,dtype=torch.float32)
+        # mask_d_erode = mask_erode[..., 0] > 0 if i < N else mask_erode[..., 0] <= 0
+        # md = (mask_d_erode).float()
+        # md_arr = [(mask_d_erode)]
+        # while True:
+        #     new_md = torch.tensor(cv2.dilate(md.numpy(),
+        #                             x_kernel if i < N else v_kernel,
+        #                             iterations=5))
+        #     new_md_mask = (new_md - md) > 0
+        #     if not new_md_mask.max():
+        #         break
+        #     md_arr.append(new_md_mask.detach().clone())
+        #     md = new_md
+        # t = torch.linspace(1, 0, len(md_arr))
+        # for j, md_mask in enumerate(md_arr):
+        #     t_map[md_mask] = t[j]
+        # if i<N:
+        #     depth[mask_d] = (ref_d_img * (1 - t_map) + depth * t_map)[mask_d]
             
-            
-            t_map = torch.zeros_like(depth,dtype=torch.float32)
-            mask_d_erode = mask_erode[..., 0] > 0
-            md = (mask_d_erode).float()
-            md_arr = [(mask_d_erode)]
-            while True:
-                new_md = torch.tensor(cv2.dilate(md.numpy(),
-                                        x_kernel,
-                                        iterations=5))
-                new_md_mask = (new_md - md) > 0
-                if not new_md_mask.max():
-                    break
-                md_arr.append(new_md_mask.detach().clone())
-                md = new_md
-            t = torch.linspace(1, 0, len(md_arr))
-            t = 1 / (1 + torch.exp(5 - 10 * t))
-            for j, md_mask in enumerate(md_arr):
-                t_map[md_mask] = t[j]
-        if i < N:    
-            depth[mask_d] = (ref_d_img * (1 - t_map) + depth * t_map)[mask_d]
-            
-    if i == N:
-        global_rads = (global_pts.T[0]**2+global_pts.T[2]**2) 
-        global_rad_mask = (global_rads < (near_depth * 1.1)**2)
-        bottom_y = -torch.sort(global_pts.T[1, global_rad_mask], descending=True).values[:int(global_pts.shape[0]/10)].mean()
-    if i >= N:
-        depth = 2 *(depth - depth.min()) + depth.min()
-        
+
     depth_pixels = torch.stack((x*depth, y*depth, 1*depth), axis=0)
     pts_coord_cam_i = torch.matmul(
         torch.linalg.inv(K), depth_pixels.reshape(3, -1))
@@ -256,51 +250,42 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
     pts_colors_i = ((down_img).reshape(-1, 3).float()/255.)
 
     combined_mask = (mask.reshape(-1, 3) > 0) 
-    #import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
     
-    if i > 0 and i < N:
-        global_mask_inside = torch.zeros([global_pts.shape[0]]).bool()
-        global_mask_inside[pos_z_mask] = mask_inside
-        pts_coord_interpld = pts_coord_world_i.reshape(3,512,512)[..., inside_pixels[:, 1], inside_pixels[:, 0]]
-        #import pdb; pdb.set_trace()
-        global_pts.T[..., global_mask_inside] = pts_coord_interpld
+    # if i > 0 and i < N:
+    #     global_mask_inside = torch.zeros([global_pts.shape[0]]).bool()
+    #     global_mask_inside[pos_z_mask] = mask_inside
+    #     pts_coord_interpld = pts_coord_world_i.reshape(3,H,W)[..., inside_pixels[:, 1], inside_pixels[:, 0]]
+    #     #import pdb; pdb.set_trace()
+    #     global_pts.T[..., global_mask_inside] = pts_coord_interpld
         
-        gaussian_model.change_global_pts(global_pts)
+    #     gaussian_model.change_global_pts(global_pts)
         
-    elif i >= N:
-        global_mask_inside = torch.zeros([global_pts.shape[0]]).bool()
-        global_mask_inside[pos_z_mask] = mask_inside
+    # elif i >= N:
+    #     global_mask_inside = torch.zeros([global_pts.shape[0]]).bool()
+    #     global_mask_inside[pos_z_mask] = mask_inside
         
-        edge_mask = mask_diff[..., 0][inside_pixels[:, 1],inside_pixels[:, 0]]
-        edge_pixels=inside_pixels[edge_mask]
+    #     edge_mask = mask_diff[..., 0][inside_pixels[:, 1],inside_pixels[:, 0]]
+    #     edge_pixels=inside_pixels[edge_mask]
         
-        global_edge_mask = torch.zeros_like(global_mask_inside)
-        global_edge_mask[global_mask_inside] = edge_mask
-        ref_global_coord = global_pts.T[..., global_edge_mask]
-        ref_edge_coord = torch.zeros([3, 512,512])
-        ref_edge_coord[..., edge_pixels[:, 1], edge_pixels[:,0]]= ref_global_coord
-        final_v_mask = torch.zeros(512,512).bool()
-        final_v_mask[edge_pixels[:, 1], edge_pixels[:,0]] = 1
-        final_v_mask = final_v_mask & mask_diff[..., 0]
+    #     global_edge_mask = torch.zeros_like(global_mask_inside)
+    #     global_edge_mask[global_mask_inside] = edge_mask
+    #     ref_global_coord = global_pts.T[..., global_edge_mask]
+    #     ref_edge_coord = torch.zeros([3, H,W])
+    #     ref_edge_coord[..., edge_pixels[:, 1], edge_pixels[:,0]]= ref_global_coord
+    #     final_v_mask = torch.zeros(H,W).bool()
+    #     final_v_mask[edge_pixels[:, 1], edge_pixels[:,0]] = 1
+    #     final_v_mask = final_v_mask & mask_diff[..., 0]
         
-        ref_v_coord = ref_edge_coord[..., final_v_mask] # 3 * M
+    #     ref_v_coord = ref_edge_coord[..., final_v_mask] # 3 * M
+    #     v_coord = pts_coord_world_i.reshape(3,H,W)[..., final_v_mask] # 3 * M
+    #     u_coord = pts_coord_world_i.T[combined_mask[...,0]].T # 3 * N
+    #     delta_v = ref_v_coord - v_coord
         
-        low_mask = -pts_coord_world_i[1] < bottom_y
-        up_mask = -pts_coord_world_i[1] > bottom_y + 0.1
-        rads = (pts_coord_world_i[0]**2+pts_coord_world_i[2]**2) 
-        rad_mask = (rads > (near_depth * 1.1)**2)
-        u_mask = low_mask
-        combined_mask[rad_mask] = False
-        #combined_mask[~rad_mask] = True
-        combined_mask[up_mask] = False
-        
-        pts_coord_world_i[1, u_mask] = -bottom_y
-        pts_coord_world_i[0, u_mask] *= 1.2
-        pts_coord_world_i[2, u_mask] *= 1.2
-        #
+    #     delta_u = delta_v.mean(dim=1)
+    #     # import pdb; pdb.set_trace()
+    #     pts_coord_world_i.T[combined_mask[...,0]] += delta_u
 
-    # if i>=N:
-    #     import pdb; pdb.set_trace()
     new_pts_coord_world = pts_coord_world_i.T[combined_mask].reshape(-1, 3)
     new_pts_colors = pts_colors_i[combined_mask].reshape(-1, 3)
 
@@ -309,9 +294,11 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
         near_depth = torch.sort(global_pts[:, 2]).values[:int(
             global_pts.shape[0]/100)].mean()
     else:
-        global_pts = torch.concat([global_pts, new_pts_coord_world.cpu()], axis=0)
+        global_pts = torch.concat(
+            [global_pts, new_pts_coord_world.cpu()], axis=0)
 
-    new_pcd = BasicPointCloud(new_pts_coord_world.cpu(), new_pts_colors.cpu(), normals=None)
+    new_pcd = BasicPointCloud(
+        new_pts_coord_world.cpu(), new_pts_colors.cpu(), normals=None)
 
     new_gaussian_model = GaussianModel(opt.sh_degree)
     new_gaussian_model.create_from_pcd(new_pcd, cameras_extent)
@@ -320,11 +307,12 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
     del new_gaussian_model
     # if i >= N:  
     #     import pdb; pdb.set_trace()
+    
     # warm-up
     gt_image = gt_images[i].to("cuda")
     training_model = gaussian_model 
     training_model.training_setup(opt)
-    training_iters = 500
+    training_iters = 50
     for iteration in range(training_iters):
         render_pkg = render(train_cameras[i], training_model, opt, background)
         image, viewspace_point_tensor, visibility_filter, radii = (
@@ -347,12 +335,9 @@ for i in tqdm(range(N + N_2), desc="creating point cloud from poses"):
 
             training_model.optimizer.step()
             training_model.optimizer.zero_grad(set_to_none=True)
-    
-    if i >= N+5:
-        break
 
 
-debug = 1
+debug = 0
 if debug:
     save_splat(gaussian_model, output_path)
     import pdb; pdb.set_trace()
@@ -365,7 +350,7 @@ gaussian_model.training_setup(opt)
 MAX_USAGE = 50000
 usage = [0] * (N + N_2)
 ADD_POSE_INTERVAL = 10
-ADD_POSE_FROM_ITER = 500
+ADD_POSE_FROM_ITER = 1000
 ADD_POSE_UNTIL_ITER = 3000
 
 
@@ -378,13 +363,13 @@ def get_new_GT(viewpoint_cam, rate: float):
     # get refined G.T.
     image_u8 = (255*image.clone().detach().cpu().permute(1, 2, 0)).byte()
     image_pil = Image.fromarray(image_u8.numpy()).convert('RGB')
-    strength_ctrlr = max(0.5, 0.7 - 0.2 * rate)
+    strength_ctrlr = max(0.3, 0.6 - 0.3 * rate)
     new_gt_pil = rgb_model(
         prompt=prompt,
         negative_prompt=neg_prompt,
         generator=generator,
         strength=strength_ctrlr,
-        guidance_scale=10,
+        guidance_scale=8,
         num_inference_steps=30,
         image=image_pil,
         mask_image=mask_all_pil
@@ -393,7 +378,7 @@ def get_new_GT(viewpoint_cam, rate: float):
     # manually downsample from 1024 to 512, because the params (height, width)=512 to the pipeline give bad results
     raw_img = torch.from_numpy(np.array(new_gt_pil)).float()
     down_img = F.interpolate(raw_img.permute(
-        2, 0, 1).unsqueeze(0), scale_factor=0.5).squeeze(0)
+        2, 0, 1).unsqueeze(0), scale_factor=H/1024).squeeze(0)
     new_gt = down_img/255.
 
     return new_gt
@@ -410,8 +395,7 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):
     #     new_cam = pose2cam(new_pose, len(train_cameras))
     #     train_cameras.append(new_cam)
     #     usage.append(0)
-    #     gt_images.append(get_new_GT(new_cam, 
-    #                                 (iteration - ADD_POSE_FROM_ITER) / (ADD_POSE_UNTIL_ITER - ADD_POSE_FROM_ITER)))
+    #     gt_images.append(get_new_GT(new_cam, iteration / ADD_POSE_UNTIL_ITER))
 
     # Pick a Camera
     cam_idx = randint(0, len(train_cameras) - 1)
@@ -424,14 +408,14 @@ for iteration in tqdm(range(1, opt.iterations+1), desc="training gaussians"):
             render_pkg['render'], render_pkg['viewspace_points'], render_pkg['visibility_filter'], render_pkg['radii'])
     else:
         # Replace camera and Render
+        import pdb;pdb.set_trace()
         new_pose = add_new_pose(center_depth, iteration, opt.iterations)
 
         train_cameras[cam_idx] = pose2cam(new_pose, viewpoint_cam.uid)
         usage[viewpoint_cam.uid] = 0
         viewpoint_cam = train_cameras[cam_idx]
 
-        gt_images[viewpoint_cam.uid] = get_new_GT(
-            viewpoint_cam, iteration / ADD_POSE_UNTIL_ITER)
+        gt_images[viewpoint_cam.uid] = get_new_GT(viewpoint_cam, iteration / ADD_POSE_UNTIL_ITER)
 
     gt_image = gt_images[viewpoint_cam.uid].to("cuda")
     usage[viewpoint_cam.uid] += 1
